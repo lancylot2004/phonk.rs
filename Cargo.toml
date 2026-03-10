@@ -1,0 +1,18 @@
+[package]
+name = "phonk"
+version = "0.0.1"
+authors = ["Lancelot Liu <me@lancy.dev>"]
+edition = "2024"
+description = "`no_std`-friendly live monophonic pitch detection"
+readme = "README.md"
+repository = "https://github.com/lancylot2004/phonk.rs"
+license = "MIT"
+keywords = ["pitch"]
+categories = ["multimedia::audio", "no-std"]
+
+[dependencies]
+
+[dev-dependencies]
+symphonia = { version = "0.5.5", features = ["mp3"] }
+
+plotters = "0.3.7"
