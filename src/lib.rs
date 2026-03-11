@@ -135,6 +135,12 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
         }
     }
 
+    #[doc(hidden)]
+    /// This function is exposed for debugging purposes.
+    pub fn get_correlations(&self) -> &[u32; L] {
+        &self.correlations
+    }
+
     fn autocorrelate(&mut self) {
         let words = (N + 63) / 64;
 

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "helpers"]
+resolver = "2"
+
 [package]
 name = "phonk"
 version = "0.0.1"
@@ -13,6 +17,11 @@ categories = ["multimedia::audio", "no-std"]
 [dependencies]
 
 [dev-dependencies]
-symphonia = { version = "0.5.5", features = ["mp3"] }
+phonk-helpers = { path = "helpers" }
 
+# Serialisation
+serde_json = "1.0.149"
+
+# Console Plotting
 plotters = "0.3.7"
+clap = { version = "4.5.60", features = ["derive"] }

@@ -1,0 +1,9 @@
+[package]
+name = "phonk-helpers"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+symphonia = { version = "0.5.5", features = ["mp3"] }
+

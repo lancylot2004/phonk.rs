@@ -1,5 +1,5 @@
 # Rust
-/target
+**/target
 
 # System
 .DS_Store

@@ -1,11 +1,9 @@
-use crate::common::decode::decode;
 use phonk::phonk;
-
-mod common;
+use phonk_helpers::decode;
 
 #[test]
 fn can_detect_purish_pitches() {
-    let (samples_by_channel, sample_rate, _) = decode("tests/assets/purish/fork-440.mp3", "mp3");
+    let (samples_by_channel, sample_rate) = decode("tests/assets/violin-in-cafe-440.mp3");
     let samples = samples_by_channel
         .first()
         .expect("decoded audio has no channels");
