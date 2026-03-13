@@ -19,9 +19,16 @@ categories = ["multimedia::audio", "no-std"]
 [dev-dependencies]
 phonk-helpers = { path = "helpers" }
 
+# Benchmarking
+criterion = "0.8.2"
+
 # Serialisation
 serde_json = "1.0.149"
 
 # Console Plotting
 plotters = "0.3.7"
 clap = { version = "4.5.60", features = ["derive"] }
+
+[[bench]]
+name = "bench"
+harness = false
