@@ -1,7 +1,9 @@
 #![no_std]
 
+use crate::executor::Executor;
 use crate::ring::Ring;
 
+pub mod executor;
 mod ring;
 
 /// Constructs a [Phonk] with correctly derived const parameters (`W = (N + 63) / 64`,
@@ -155,7 +157,16 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
     pub fn run(&mut self) -> Option<f64> {
         debug_assert!(self.data.is_full());
         self.zero_cross();
-        self.autocorrelate();
+        self.autocorrelate_serial();
+        self.subsample_interpolate()
+    }
+
+    /// Run pitch detection on a batch of samples, using the provided [executor] to parallelize the
+    /// autocorrelation step. Running the algorithm before the buffer is full is undefined behaviour.
+    pub fn run_parallel(&mut self, executor: &impl Executor) -> Option<f64> {
+        debug_assert!(self.data.is_full());
+        self.zero_cross();
+        self.autocorrelate_parallel(executor);
         self.subsample_interpolate()
     }
 
@@ -203,31 +214,55 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
         &self.correlations
     }
 
-    fn autocorrelate(&mut self) {
+    fn autocorrelate_serial(&mut self) {
+        self.autocorrelate(self.min_period(), self.max_period())
+    }
+
+    #[inline(always)]
+    fn correlate_lag(bitstream: &[u64; W], lag: usize) -> u32 {
+        let word_shift = lag / 64;
+        let bit_shift = lag % 64;
+
+        let mut sum = 0u64;
+        let limit = W - word_shift - 1;
+
+        for i in 0..limit {
+            let a = unsafe { *bitstream.get_unchecked(i) };
+
+            let b = if bit_shift == 0 {
+                unsafe { *bitstream.get_unchecked(i + word_shift) }
+            } else {
+                let b0 = unsafe { *bitstream.get_unchecked(i + word_shift) };
+                let b1 = unsafe { *bitstream.get_unchecked(i + word_shift + 1) };
+                (b0 << bit_shift) | (b1 >> (64 - bit_shift))
+            };
+
+            sum += (a ^ b).count_ones() as u64;
+        }
+
+        sum as u32
+    }
+
+    fn autocorrelate_parallel(&mut self, executor: &impl Executor) {
+        let from = self.min_period();
+        let to = self.max_period();
         let bitstream = &self.bitstream;
+        let out_addr = self.correlations.as_mut_ptr() as usize;
 
-        for lag in self.min_period()..self.max_period() {
-            let word_shift = lag / 64;
-            let bit_shift = lag % 64;
-
-            let mut sum = 0u64;
-            let limit = W - word_shift - 1;
-
-            for i in 0..limit {
-                let a = unsafe { *bitstream.get_unchecked(i) };
-
-                let b = if bit_shift == 0 {
-                    unsafe { *bitstream.get_unchecked(i + word_shift) }
-                } else {
-                    let b0 = unsafe { *bitstream.get_unchecked(i + word_shift) };
-                    let b1 = unsafe { *bitstream.get_unchecked(i + word_shift + 1) };
-                    (b0 << bit_shift) | (b1 >> (64 - bit_shift))
-                };
-
-                sum += (a ^ b).count_ones() as u64;
+        // Safety: each task writes only to [from, to) chunk provided by the executor.
+        // Correctness requires executor to provide non-overlapping chunks.
+        executor.execute(from..to, |from, to| {
+            let out_ptr = out_addr as *mut u32;
+            for lag in from..to {
+                let sum = Self::correlate_lag(bitstream, lag);
+                unsafe { *out_ptr.add(lag) = sum };
             }
+        });
+    }
 
-            self.correlations[lag] = sum as u32;
+    fn autocorrelate(&mut self, from: usize, to: usize) {
+        for lag in from..to {
+            self.correlations[lag] = Self::correlate_lag(&self.bitstream, lag);
         }
     }
 
