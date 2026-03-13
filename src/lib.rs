@@ -1,3 +1,55 @@
+//! `no_std`, `no_alloc` library for monophonic pitch detection based on the
+//! *bitstream autocorrelation* algorithm, designed for embedded environments.
+//!
+//! # Usage
+//!
+//! Create a detector with the [`phonk!`] macro, push audio samples, then call [`Phonk::run`]:
+//!
+//! ```no_run
+//! use phonk::phonk;
+//!
+//! let mut detector = phonk!(4800, 44100, 20, 8000);
+//!
+//! // When new audio samples are available:
+//! detector.push_samples(&[/* f32 audio samples */]);
+//!
+//! if let Some(pitch) = detector.run() {
+//!     // `pitch` is the detected frequency in Hz
+//! }
+//! ```
+//!
+//! # Parallel usage
+//!
+//! For platforms with multiple cores, implement [`Executor`] and call
+//! [`Phonk::run_parallel`] instead:
+//!
+//! ```no_run
+//! use phonk::phonk;
+//! use phonk::executor::Executor;
+//! use core::ops::Range;
+//!
+//! struct MyExecutor;
+//!
+//! impl Executor for MyExecutor {
+//!     fn execute<F>(&self, range: Range<usize>, job: F)
+//!     where
+//!         F: Fn(usize, usize) + Sync,
+//!     {
+//!         // Distribute `range` across threads and call `job(from, to)` for each chunk.
+//!         job(range.start, range.end);
+//!     }
+//! }
+//!
+//! let mut detector = phonk!(4800, 44100, 20, 8000);
+//! let executor = MyExecutor;
+//!
+//! detector.push_samples(&[/* f32 audio samples */]);
+//!
+//! if let Some(pitch) = detector.run_parallel(&executor) {
+//!     // `pitch` is the detected frequency in Hz
+//! }
+//! ```
+
 #![no_std]
 
 use crate::executor::Executor;
@@ -11,12 +63,12 @@ mod ring;
 /// given batch size, and number of lags to compute, respectively. The macro also performs
 /// compile-time validation of the input parameters.
 ///
-/// * [batch_size] - Number of samples to process in each batch. Must be a multiple of 2 and greater
-/// than 1. Scaling this parameter will impact performance linearly, and the minimum detectable
-/// frequency is inversely proportional to it.
-/// * [sample_rate] - Sample rate of the input audio in Hz. Must be greater than 1 Hz.
-/// * [min_freq] - Minimum frequency to detect in Hz. Must be less than the maximum frequency.
-/// * [max_freq] - Maximum frequency to detect in Hz. Must be greater than the minimum frequency.
+/// * `batch_size` - Number of samples to process in each batch. Must be a multiple of 2 and greater
+///   than 1. Scaling this parameter will impact performance linearly, and the minimum detectable
+///   frequency is inversely proportional to it.
+/// * `sample_rate` - Sample rate of the input audio in Hz. Must be greater than 1 Hz.
+/// * `min_freq` - Minimum frequency to detect in Hz. Must be less than the maximum frequency.
+/// * `max_freq` - Maximum frequency to detect in Hz. Must be greater than the minimum frequency.
 #[macro_export]
 macro_rules! phonk {
     ($batch_size:expr, $sample_rate:expr, $min_freq: expr, $max_freq:expr) => {{
@@ -104,7 +156,7 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
             return Err(PhonkError::BatchSizeTooSmall);
         }
 
-        if N % 2 != 0 {
+        if !N.is_multiple_of(2) {
             return Err(PhonkError::BatchSizeNotEven);
         }
 
@@ -146,8 +198,8 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
         (self.sample_rate / self.min_freq) as usize
     }
 
-    /// [samples] will be pushed into the internal ring buffer. If there are more samples than the
-    /// batch size, only the most recent [N] samples will be saved.
+    /// `samples` will be pushed into the internal ring buffer. If there are more samples than the
+    /// batch size, only the most recent `N` samples will be saved.
     pub fn push_samples(&mut self, samples: &[f32]) {
         self.data.extend_from_slice(samples);
     }

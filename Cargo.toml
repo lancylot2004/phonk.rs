@@ -9,10 +9,14 @@ authors = ["Lancelot Liu <me@lancy.dev>", "Bill Zhang <billthegyt@gmail.com>"]
 edition = "2024"
 description = "`no_std`-friendly live monophonic pitch detection"
 readme = "README.md"
+homepage = "https://github.com/lancylot2004/phonk.rs"
 repository = "https://github.com/lancylot2004/phonk.rs"
 license = "MIT"
 keywords = ["pitch"]
 categories = ["multimedia::audio", "no-std"]
+exclude = [
+    ".idea/*",
+]
 
 [dependencies]
 
