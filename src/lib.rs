@@ -204,26 +204,30 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
     }
 
     fn autocorrelate(&mut self) {
+        let bitstream = &self.bitstream;
+
         for lag in self.min_period()..self.max_period() {
             let word_shift = lag / 64;
             let bit_shift = lag % 64;
 
-            let mut sum = 0u32;
-            let limit = W.saturating_sub(word_shift + 1);
+            let mut sum = 0u64;
+            let limit = W - word_shift - 1;
 
             for i in 0..limit {
-                let a = self.bitstream[i];
+                let a = unsafe { *bitstream.get_unchecked(i) };
+
                 let b = if bit_shift == 0 {
-                    self.bitstream[i + word_shift]
+                    unsafe { *bitstream.get_unchecked(i + word_shift) }
                 } else {
-                    (self.bitstream[i + word_shift] << bit_shift)
-                        | (self.bitstream[i + word_shift + 1] >> (64 - bit_shift))
+                    let b0 = unsafe { *bitstream.get_unchecked(i + word_shift) };
+                    let b1 = unsafe { *bitstream.get_unchecked(i + word_shift + 1) };
+                    (b0 << bit_shift) | (b1 >> (64 - bit_shift))
                 };
 
-                sum += (a ^ b).count_ones();
+                sum += (a ^ b).count_ones() as u64;
             }
 
-            self.correlations[lag] = sum;
+            self.correlations[lag] = sum as u32;
         }
     }
 
