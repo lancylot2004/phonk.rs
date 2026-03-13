@@ -100,10 +100,12 @@ fn collect_correlations(
     let mut phonk = phonk!(BATCH, sample_rate, min_freq, max_freq)
         .expect("invalid phonk parameters; check sample rate and max frequency");
 
+    phonk.push_samples(&samples[..BATCH - step]);
+
     let mut correlations = BTreeMap::new();
-    for offset_mult in 0..(samples.len().saturating_sub(BATCH)) / step {
-        let offset = offset_mult * step;
-        phonk.run(&samples[offset..offset + BATCH]);
+    for (offset_mult, chunk) in samples[BATCH - step..].chunks(step).enumerate() {
+        phonk.push_samples(chunk);
+        phonk.run();
         correlations.insert(offset_mult, phonk.get_correlations().to_vec());
     }
     correlations

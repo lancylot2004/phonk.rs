@@ -13,15 +13,19 @@ fn bench_phonk(c: &mut Criterion) {
     let samples = samples_by_channel
         .first()
         .expect("decoded audio has no channels");
-    let first_frame = &samples[..BATCH_SIZE];
 
     let mut group = c.benchmark_group("phonk_violin_in_cafe_440");
 
     group.bench_function("single_frame_run", |b| {
         b.iter_batched(
-            || phonk!(BATCH_SIZE, sample_rate, 20, 8_000).unwrap(),
+            || {
+                let mut detector = phonk!(BATCH_SIZE, sample_rate, 20, 8_000).unwrap();
+                detector.push_samples(&samples[..BATCH_SIZE - STEP_SIZE]);
+                detector
+            },
             |mut detector| {
-                black_box(detector.run(first_frame));
+                detector.push_samples(&samples[BATCH_SIZE - STEP_SIZE..BATCH_SIZE]);
+                black_box(detector.run());
             },
             BatchSize::SmallInput,
         );
@@ -29,11 +33,15 @@ fn bench_phonk(c: &mut Criterion) {
 
     group.bench_function("full_clip_sweep", |b| {
         b.iter_batched(
-            || phonk!(BATCH_SIZE, sample_rate, 20, 8_000).unwrap(),
+            || {
+                let mut detector = phonk!(BATCH_SIZE, sample_rate, 20, 8_000).unwrap();
+                detector.push_samples(&samples[..BATCH_SIZE - STEP_SIZE]);
+                detector
+            },
             |mut detector| {
-                for offset_mult in 0..(samples.len() - BATCH_SIZE) / STEP_SIZE {
-                    let offset = offset_mult * STEP_SIZE;
-                    black_box(detector.run(&samples[offset..offset + BATCH_SIZE]));
+                for chunk in samples[BATCH_SIZE - STEP_SIZE..].chunks(STEP_SIZE) {
+                    detector.push_samples(chunk);
+                    black_box(detector.run());
                 }
             },
             BatchSize::SmallInput,

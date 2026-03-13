@@ -8,19 +8,17 @@ fn can_detect_purish_pitches() {
         .first()
         .expect("decoded audio has no channels");
     let mut phonk = phonk!(9_600, sample_rate, 20, 8_000).unwrap();
+    let (initial, samples) = samples.split_at(9_600 - 2_400);
+    phonk.push_samples(initial);
 
-    for offset_mult in 0..(samples.len() - 9_600) / 2_400 {
-        let offset = offset_mult * 2_400;
-        let pitch = phonk.run(&samples[offset..offset + 9_600]);
+    for (index, chunk) in samples.chunks(2_400).enumerate() {
+        phonk.push_samples(chunk);
+        let pitch = phonk.run();
         let pitch_string = match pitch {
-            Some((max_index, pitch)) => {
-                let naive_pitch = max_index as f64 * sample_rate as f64 / 9600.0;
-                format!(
-                    "Pitch: {pitch:.2} Hz, Index: {max_index}, Naive Pitch: {naive_pitch:.2} Hz"
-                )
-            }
+            Some(pitch) => format!("Pitch: {pitch:.2} Hz"),
             None => "None".to_string(),
         };
-        println!("Offset: {offset:>6}, {pitch_string}");
+        let chunk_start = index * 2_400;
+        println!("Offset: {chunk_start:>6}, {pitch_string}");
     }
 }

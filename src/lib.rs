@@ -1,5 +1,8 @@
 #![no_std]
-extern crate alloc;
+
+use crate::ring::Ring;
+
+mod ring;
 
 /// Constructs a [Phonk] with correctly derived const parameters (`W = (N + 63) / 64`,
 /// `L = N / 2`), where `N`, `W`, and `L` are the batch size, number of 64-bit words needed for the
@@ -10,8 +13,8 @@ extern crate alloc;
 /// than 1. Scaling this parameter will impact performance linearly, and the minimum detectable
 /// frequency is inversely proportional to it.
 /// * [sample_rate] - Sample rate of the input audio in Hz. Must be greater than 1 Hz.
-/// * [max_freq] - Maximum frequency to detect in Hz. Must be greater than the minimum frequency
-/// implied by [batch_size].
+/// * [min_freq] - Minimum frequency to detect in Hz. Must be less than the maximum frequency.
+/// * [max_freq] - Maximum frequency to detect in Hz. Must be greater than the minimum frequency.
 #[macro_export]
 macro_rules! phonk {
     ($batch_size:expr, $sample_rate:expr, $min_freq: expr, $max_freq:expr) => {{
@@ -32,7 +35,7 @@ macro_rules! phonk {
 ///
 /// ```no_run
 /// use phonk::phonk;
-/// let mut phonk = phonk!(4800, 44100, 8000u32);
+/// let mut phonk = phonk!(4800, 44100, 20, 8000);
 /// ```
 ///
 /// This is required because stable Rust lacks the `generic_const_exprs` feature. [`Phonk`]
@@ -45,7 +48,14 @@ pub struct Phonk<const N: usize, const W: usize, const L: usize> {
     min_freq: u32,
     max_freq: u32,
 
+    /// Internal ring buffer of the most recent [N] audio samples.
+    data: Ring<f32, N>,
+
+    /// Internal packed zero-crossed bitstream for the current full window.
     bitstream: [u64; W],
+
+    /// Autocorrelation values for lags in the range [min_period, max_period). Since these are
+    /// computed using XOR, minimum values represent higher correlation.
     correlations: [u32; L],
 }
 
@@ -68,6 +78,7 @@ pub enum PhonkError {
     MaxFreqPeriodOutOfBounds,
 }
 
+/// Intermediary structure describing a recurring period observed in the autocorrelation data.
 #[derive(Clone, Copy)]
 struct PeriodState {
     /// Last index in correlations where this period was observed.
@@ -107,11 +118,12 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
             sample_rate,
             min_freq,
             max_freq,
+            data: Ring::new(0.0),
             bitstream: [0u64; W],
             correlations: [0u32; L],
         };
 
-        if phonk.min_period() >= N as u32 / 2 {
+        if phonk.min_period() >= N / 2 {
             return Err(PhonkError::MaxFreqPeriodOutOfBounds);
         }
 
@@ -123,48 +135,65 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
     }
 
     /// The minimum period in samples corresponding to the maximum detectable frequency.
-    const fn min_period(&self) -> u32 {
-        self.sample_rate.div_ceil(self.max_freq)
+    const fn min_period(&self) -> usize {
+        self.sample_rate.div_ceil(self.max_freq) as usize
     }
 
     /// The maximum period in samples corresponding to the minimum detectable frequency.
-    const fn max_period(&self) -> u32 {
-        self.sample_rate / self.min_freq
+    const fn max_period(&self) -> usize {
+        (self.sample_rate / self.min_freq) as usize
     }
 
-    /// Run pitch detection on a batch of samples. This will not trigger the callback.
-    pub fn run(&mut self, samples: &[f32]) -> Option<(usize, f64)> {
-        self.zero_cross(samples);
+    /// [samples] will be pushed into the internal ring buffer. If there are more samples than the
+    /// batch size, only the most recent [N] samples will be saved.
+    pub fn push_samples(&mut self, samples: &[f32]) {
+        self.data.extend_from_slice(samples);
+    }
+
+    /// Run pitch detection on a batch of samples. Running the algorithm before the buffer is
+    /// full is undefined behaviour.
+    pub fn run(&mut self) -> Option<f64> {
+        debug_assert!(self.data.is_full());
+        self.zero_cross();
         self.autocorrelate();
-        self.subsample_interpolate(samples)
+        self.subsample_interpolate()
     }
 
     const HYSTERESIS_THRESHOLD: f32 = 0.01;
 
-    fn zero_cross(&mut self, samples: &[f32]) {
-        debug_assert!(samples.len() == N);
+    fn zero_cross(&mut self) {
+        let mut flag = false;
+        let (sample_head, sample_tail) = self.data.as_slices();
 
         let mut word = 0u64;
         let (mut bit_index, mut word_index) = (0usize, 0usize);
-        let mut flag = false;
 
-        for &sample in samples {
-            flag = if sample >= Self::HYSTERESIS_THRESHOLD {
-                true
-            } else if sample <= -Self::HYSTERESIS_THRESHOLD {
-                false
-            } else {
-                flag
-            };
-            word = (word << 1) | flag as u64;
+        let mut process_samples = |samples: &[f32]| {
+            for &sample in samples {
+                flag = if sample >= Self::HYSTERESIS_THRESHOLD {
+                    true
+                } else if sample <= -Self::HYSTERESIS_THRESHOLD {
+                    false
+                } else {
+                    flag
+                };
+                word = (word << 1) | flag as u64;
 
-            bit_index += 1;
-            if bit_index == 64 {
-                self.bitstream[word_index] = word;
-                word_index += 1;
-                bit_index = 0;
-                word = 0;
+                bit_index += 1;
+                if bit_index == 64 {
+                    self.bitstream[word_index] = word;
+                    word_index += 1;
+                    word = 0;
+                    bit_index = 0;
+                }
             }
+        };
+
+        process_samples(sample_head);
+        process_samples(sample_tail);
+
+        if bit_index > 0 && word_index < W {
+            self.bitstream[word_index] = word << (64 - bit_index);
         }
     }
 
@@ -176,26 +205,25 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
 
     fn autocorrelate(&mut self) {
         for lag in self.min_period()..self.max_period() {
-            let word_shift: usize = lag as usize / 64;
-            let bit_shift: usize = lag as usize % 64;
+            let word_shift = lag / 64;
+            let bit_shift = lag % 64;
 
             let mut sum = 0u32;
             let limit = W.saturating_sub(word_shift + 1);
 
             for i in 0..limit {
                 let a = self.bitstream[i];
-                let b = match bit_shift {
-                    0 => self.bitstream[i + word_shift],
-                    shift => {
-                        (self.bitstream[i + word_shift] << shift)
-                            | (self.bitstream[i + word_shift + 1] >> (64 - shift))
-                    }
+                let b = if bit_shift == 0 {
+                    self.bitstream[i + word_shift]
+                } else {
+                    (self.bitstream[i + word_shift] << bit_shift)
+                        | (self.bitstream[i + word_shift + 1] >> (64 - bit_shift))
                 };
 
                 sum += (a ^ b).count_ones();
             }
 
-            self.correlations[lag as usize] = sum;
+            self.correlations[lag] = sum;
         }
     }
 
@@ -292,37 +320,38 @@ impl<const N: usize, const W: usize, const L: usize> Phonk<N, W, L> {
         min_period
     }
 
-    fn subsample_interpolate(&self, samples: &[f32]) -> Option<(usize, f64)> {
+    fn subsample_interpolate(&self) -> Option<f64> {
         let mut prev = 0.0f32;
         let mut start_edge = 0usize;
 
-        for (i, &sample) in samples.iter().enumerate() {
+        for i in 0..N {
+            let sample = self.data[i];
             if sample > 0.0 {
-                prev = if i == 0 { 0.0 } else { samples[i - 1] };
+                prev = if i == 0 { 0.0 } else { self.data[i - 1] };
                 start_edge = i;
                 break;
             }
         }
 
-        let mut dy = samples[start_edge] - prev;
+        let mut dy = self.data[start_edge] - prev;
         let dx1 = -prev / dy;
 
         let max_index = self.find_lag()?;
         let mut next_edge = max_index - 1;
 
-        while samples[next_edge] < 0.0 {
-            prev = samples[next_edge];
+        while self.data[next_edge] < 0.0 {
+            prev = self.data[next_edge];
             next_edge += 1;
         }
 
-        dy = samples[next_edge] - prev;
+        dy = self.data[next_edge] - prev;
         let dx2 = -prev / dy;
 
         let lag_samples = (next_edge - start_edge) as f32 + (dx2 - dx1);
         let pitch = self.sample_rate as f64 / lag_samples as f64;
 
         if pitch > self.min_freq as f64 && pitch < self.max_freq as f64 {
-            Some((max_index, pitch))
+            Some(pitch)
         } else {
             None
         }
