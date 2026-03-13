@@ -33,9 +33,13 @@ struct Args {
     #[arg(long)]
     sample_rate: Option<u32>,
 
+    /// Minimum detectable frequency (Hz).
+    #[arg(short, long, default_value_t = 20)]
+    min_freq: u32,
+
     /// Maximum detectable frequency (Hz).
-    #[arg(short, long, default_value_t = 8_000.0)]
-    max_freq: f64,
+    #[arg(short, long, default_value_t = 8_000)]
+    max_freq: u32,
 
     /// How to handle multichannel audio.
     #[arg(short, long, value_enum, default_value_t = ChannelMode::First)]
@@ -90,9 +94,10 @@ fn collect_correlations(
     samples: &[f32],
     step: usize,
     sample_rate: u32,
-    max_freq: f64,
+    min_freq: u32,
+    max_freq: u32,
 ) -> BTreeMap<usize, Vec<u32>> {
-    let mut phonk = phonk!(BATCH, sample_rate, max_freq)
+    let mut phonk = phonk!(BATCH, sample_rate, min_freq, max_freq)
         .expect("invalid phonk parameters; check sample rate and max frequency");
 
     let mut correlations = BTreeMap::new();
@@ -205,7 +210,13 @@ fn main() {
     let sample_rate = args.sample_rate.unwrap_or(file_sample_rate);
     let samples = mix_channels(channel_bufs, args.channel_mode);
 
-    let correlations = collect_correlations(&samples, args.step_size, sample_rate, args.max_freq);
+    let correlations = collect_correlations(
+        &samples,
+        args.step_size,
+        sample_rate,
+        args.min_freq,
+        args.max_freq,
+    );
 
     match args.command {
         Command::Dump { output } => {
